@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+package embedded;
+
+message Config {
+  bytes rootkey = 1;
+  bytes rootkey_pw = 2;
+  bytes rootcert = 3;
+  string apikey = 4;
+}
