@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"io"
 	"io/ioutil"
 	"os"
 	"os/signal"
@@ -25,6 +28,8 @@ func main() {
 	app.Author = "Gabriel Ochsenhofer"
 	app.Version = metadata.Version()
 
+	//app.ArgsUsage
+
 	app.Flags = []cli.Flag{
 		cli.StringFlag{
 			Name:   "loglevel, ll",
@@ -36,21 +41,6 @@ func main() {
 			EnvVar: "LISTEN",
 			Value:  ":8080",
 		},
-		cli.StringFlag{
-			Name:   "svc-key",
-			EnvVar: "SVC_KEY",
-			Usage:  "The root key (PEM). " + clix.ContentUsage(),
-		},
-		cli.StringFlag{
-			Name:   "svc-cert",
-			EnvVar: "SVC_CERT",
-			Usage:  "The root certificate (CA PEM). " + clix.ContentUsage(),
-		},
-		cli.StringFlag{
-			Name:   "apikey",
-			EnvVar: "APIKEY",
-			Usage:  "API Key for authenticated rest routes",
-		},
 	}
 
 	app.Commands = []cli.Command{
@@ -58,6 +48,7 @@ func main() {
 			Name:        "generate",
 			ShortName:   "gen",
 			Description: "generate a new master key and certificate authority",
+			Usage:       "generate a new key and CA cert",
 			Action:      cmdgen,
 			Flags: []cli.Flag{
 				cli.IntFlag{
@@ -84,6 +75,7 @@ func main() {
 		cli.Command{
 			Name:        "serve",
 			ShortName:   "s",
+			Usage:       "Host a rest server",
 			Description: "Host a rest server",
 			Action:      cmdserve,
 			Flags: []cli.Flag{
@@ -99,9 +91,68 @@ func main() {
 				},
 			},
 		},
+		cli.Command{
+			Name:      "config",
+			ShortName: "cfg",
+			Usage:     "config file manipulation",
+			Subcommands: []cli.Command{
+				cli.Command{
+					Name:   "new",
+					Usage:  "create a new ZTLS config file",
+					Action: cmdcfgnew,
+					Flags: []cli.Flag{
+						cli.StringFlag{
+							Name:  "key",
+							Usage: "The root key (PEM). " + clix.ContentUsage(),
+						},
+						cli.StringFlag{
+							Name:  "cert",
+							Usage: "The root certificate (CA PEM). " + clix.ContentUsage(),
+						},
+						cli.StringFlag{
+							Name:  "apikey",
+							Usage: "API Key for authenticated rest routes",
+						},
+						cli.StringFlag{
+							Name:  "output, o",
+							Usage: "output file path",
+							Value: "ztlsconfig.txt",
+						},
+						cli.BoolFlag{
+							Name:  "stdout",
+							Usage: "output config to standard output",
+						},
+					},
+				},
+			},
+		},
+		cli.Command{
+			Name: "util",
+			Subcommands: cli.Commands{
+				cli.Command{
+					Name:      "base64decode",
+					ShortName: "b64d",
+					Action:    cmdutilbase64decode,
+					Flags: []cli.Flag{
+						cli.StringFlag{
+							Name:  "file",
+							Usage: "the input file (default: read data from arg[1])",
+						},
+						cli.StringFlag{
+							Name:  "output",
+							Usage: "output file",
+						},
+						cli.BoolFlag{
+							Name:  "stdout",
+							Usage: "output to stdout",
+						},
+					},
+				},
+			},
+		},
 	}
 
-	app.Action = run
+	//app.Action = run
 
 	if err := app.Run(os.Args); err != nil {
 		if clierr, ok := err.(*cli.ExitError); ok {
@@ -182,7 +233,15 @@ func cmdserve(c *cli.Context) error {
 			return cli.NewExitError("invalid config", 1)
 		}
 		// create a new config on the spot
-		configd = genconfig()
+		configd = genconfig(nil, nil, "")
+		println("####")
+		println("####")
+		println("CONFIG GENERATED - YOU MUST COPY THIS BELOW:")
+		println("")
+		println(string(configd))
+		println("")
+		println("")
+		println("")
 	}
 
 	ctx, cf := context.WithCancel(context.Background())
@@ -210,34 +269,115 @@ func cmdserve(c *cli.Context) error {
 	return nil
 }
 
-func genconfig() []byte {
-	key, err := pkix.NewKey(4096)
-	if err != nil {
-		panic(err)
+func cmdcfgnew(c *cli.Context) error {
+	logsetup(c)
+	var key, cert []byte
+	var apikey string
+	if vv := c.String("key"); vv != "" {
+		if v := clix.ParseContentValue(vv, true); v != nil {
+			key = v
+		}
 	}
-	ca, err := pkix.NewCACertificate(key)
-	if err != nil {
-		panic(err)
+	if vv := c.String("cert, ca"); vv != "" {
+		if v := clix.ParseContentValue(vv, true); v != nil {
+			cert = v
+		}
 	}
-	u, err := uuid.NewRandom()
-	if err != nil {
-		panic(err)
+	if vv := c.String("apikey"); vv != "" {
+		apikey = vv
 	}
+	cfgb := genconfig(key, cert, apikey)
+	if c.Bool("stdout") {
+		print(string(cfgb))
+		return nil
+	}
+	outpfn := c.String("output")
+	f, err := os.Create(outpfn)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	rdr := bytes.NewReader(cfgb)
+	if _, err := io.Copy(f, rdr); err != nil {
+		return err
+	}
+	return nil
+}
+
+func cmdutilbase64decode(c *cli.Context) error {
+	logsetup(c)
+
+	var inputdata string
+	if v := c.String("file"); v != "" {
+		bb, err := ioutil.ReadFile(v)
+		if err != nil {
+			return err
+		}
+		inputdata = strings.TrimSpace(string(bb))
+	} else {
+		inputdata = c.Args().First()
+	}
+	b, err := base64.StdEncoding.DecodeString(inputdata)
+	if err != nil {
+		return err
+	}
+	if c.Bool("stdout") {
+		os.Stdout.Write(b)
+		return nil
+	}
+	if v := c.String("output"); v != "" {
+		f, err := os.Create(v)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		rdr := bytes.NewReader(b)
+		_, _ = io.Copy(f, rdr)
+		return nil
+	}
+	return cli.NewExitError("output file not specified", 10)
+}
+
+func genconfig(prekey, preca []byte, preapikey string) []byte {
+	var key, ca []byte
+	var apikey string
+	if prekey != nil {
+		key = prekey
+	} else {
+		nkey, err := pkix.NewKey(4096)
+		if err != nil {
+			panic(err)
+		}
+		key = nkey
+	}
+	if preca != nil {
+		ca = preca
+	} else {
+		newca, err := pkix.NewCACertificate(key)
+		if err != nil {
+			panic(err)
+		}
+		ca = newca
+	}
+	if preapikey != "" {
+		apikey = preapikey
+	} else {
+		u, err := uuid.NewRandom()
+		if err != nil {
+			panic(err)
+		}
+		apikey = u.String()
+	}
+
 	cfg := &embedded.Config{
 		Rootcert: ca,
 		Rootkey:  key,
-		Apikey:   u.String(),
+		Apikey:   apikey,
 	}
-	println("####")
-	println("####")
-	println("CONFIG GENERATED")
 	pem := cfg.Marshal(map[string]string{
 		"Generator": "ztls CLI",
 		"Expires":   time.Now().AddDate(20, 0, 0).String(),
-		"X-API-KEY": u.String(),
+		"X-API-KEY": apikey,
 	})
-	println("")
-	println(string(pem))
-	println("")
 	return pem
 }

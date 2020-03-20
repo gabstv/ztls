@@ -2,3 +2,5 @@
 tmp/
 .env
 vendor/
+cmd/ztls/*.pem
+cmd/ztls/ztlsconfig.txt
